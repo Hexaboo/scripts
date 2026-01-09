@@ -56,7 +56,11 @@ upload_pixeldrain() {
 
 upload_gofile() {
     echo "📤 GoFile..."
-    R=$(curl --progress-bar -F "file=@\"$FILE\"" "https://upload.gofile.io/uploadFile")
+    if [ -z "$GOFILE_TOKEN" ]; then
+    R=$(curl -# -F "file=@\"$FILE\"" "https://upload.gofile.io/uploadFile")
+    else
+    R=$(curl -# -F "token=$GOFILE_TOKEN" -F "file=@\"$FILE\"" "https://upload.gofile.io/uploadFile")
+    fi
     echo
     LINK=$(echo "$R" | jq -r '.data.downloadPage')
     [[ "$LINK" == http* ]] || { echo "❌ GoFile failed"; return; }
