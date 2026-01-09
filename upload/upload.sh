@@ -56,9 +56,7 @@ upload_pixeldrain() {
 
 upload_gofile() {
     echo "📤 GoFile..."
-    S=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
-    [[ -z "$S" ]] && echo "❌ GoFile server error" && return
-    R=$(curl --progress-bar -F "file=@\"$FILE\"" "https://$S.gofile.io/uploadFile")
+    R=$(curl --progress-bar -F "file=@\"$FILE\"" "https://upload.gofile.io/uploadFile")
     echo
     LINK=$(echo "$R" | jq -r '.data.downloadPage')
     [[ "$LINK" == http* ]] || { echo "❌ GoFile failed"; return; }
