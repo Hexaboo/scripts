@@ -201,6 +201,140 @@ def setup_commit_hook():
         sys.exit(1)
 
 
+def setup_signing():
+    header("SSH Commit Signing Setup")
+
+    ssh_dir = Path.home() / ".ssh"
+    pubkey_path = ssh_dir / "id_ed25519.pub"
+    privkey_path = ssh_dir / "id_ed25519"
+
+    if pubkey_path.exists():
+        ok(f"Found existing public key: {pubkey_path}")
+    else:
+        warn("id_ed25519.pub not found in ~/.ssh/")
+        print(f"\n  {C.BOLD}Options:{C.RESET}")
+        print(f"  {C.DIM}1){C.RESET} Paste public key content manually")
+        print(f"  {C.DIM}2){C.RESET} Provide path to existing .pub file")
+        print(f"  {C.DIM}3){C.RESET} Generate a new ed25519 keypair")
+        choice = input(f"  {C.CYAN}Enter choice [1/2/3]:{C.RESET} ").strip()
+
+        if choice == "1":
+            step("Paste your id_ed25519.pub content below (single line, then Enter):")
+            pubkey_content = input("  > ").strip()
+            if not pubkey_content.startswith("ssh-ed25519"):
+                err("Does not look like a valid ed25519 public key. Aborting.")
+                sys.exit(1)
+            ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            pubkey_path.write_text(pubkey_content + "\n")
+            pubkey_path.chmod(0o644)
+            ok(f"Public key written to {pubkey_path}")
+
+            if not privkey_path.exists():
+                if confirm("Paste private key (id_ed25519) as well?"):
+                    step("Paste your id_ed25519 private key below.")
+                    info("Multiline input — type END on a new line when done:")
+                    lines = []
+                    while True:
+                        line = input()
+                        if line.strip() == "END":
+                            break
+                        lines.append(line)
+                    privkey_content = "\n".join(lines) + "\n"
+                    if "BEGIN OPENSSH PRIVATE KEY" not in privkey_content:
+                        err("Does not look like a valid OpenSSH private key. Aborting.")
+                        sys.exit(1)
+                    privkey_path.write_text(privkey_content)
+                    privkey_path.chmod(0o600)
+                    ok(f"Private key written to {privkey_path}")
+
+        elif choice == "2":
+            src = Path(
+                input(f"  {C.CYAN}Path to .pub file:{C.RESET} ").strip()
+            ).expanduser()
+            if not src.exists():
+                err(f"File not found: {src}")
+                sys.exit(1)
+            ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            shutil.copy2(src, pubkey_path)
+            pubkey_path.chmod(0o644)
+            src_priv = src.with_suffix("")
+            if src_priv.exists() and not privkey_path.exists():
+                shutil.copy2(src_priv, privkey_path)
+                privkey_path.chmod(0o600)
+                ok(f"Private key also restored to {privkey_path}")
+            ok(f"Public key restored to {pubkey_path}")
+
+        elif choice == "3":
+            email = run_output(["git", "config", "--global", "user.email"])
+            if not email:
+                email = input(
+                    f"  {C.CYAN}Enter email for key comment:{C.RESET} "
+                ).strip()
+            step(f"Generating ed25519 keypair for {email} ...")
+            ssh_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            run([
+                "ssh-keygen", "-t", "ed25519",
+                "-C", email,
+                "-f", str(privkey_path),
+                "-N", "",
+            ])
+            ok(f"Keypair generated: {privkey_path} / {pubkey_path}")
+        else:
+            err("Invalid choice. Aborting.")
+            sys.exit(1)
+
+    pubkey_content = pubkey_path.read_text().strip()
+    print(f"\n  {C.BOLD}Public key:{C.RESET}")
+    print(f"  {C.DIM}{pubkey_content}{C.RESET}")
+
+    if shutil.which("gh"):
+        if confirm("\nUpload this key to GitHub as a signing key?"):
+            key_title = input(
+                f"  {C.CYAN}Key title (e.g. 'ServerHive signing'):{C.RESET} "
+            ).strip() or "SSH signing key"
+            result = run(
+                ["gh", "gpg-key", "add", "--type", "signing", str(pubkey_path)],
+                check=False,
+            )
+            if result.returncode == 0:
+                ok(f"Signing key '{key_title}' uploaded to GitHub.")
+            else:
+                warn("gh gpg-key add failed. You may need to add it manually at:")
+                print("  https://github.com/settings/keys")
+    else:
+        warn("gh not found. Add your signing key manually at: https://github.com/settings/keys")
+
+    step("Configuring Git for SSH commit signing...")
+
+    git_config("gpg.format", "ssh")
+    git_config("user.signingKey", str(pubkey_path))
+    git_config("commit.gpgSign", "true")
+    git_config("tag.gpgSign", "true")
+
+    allowed_signers_path = ssh_dir / "allowed_signers"
+    git_email = run_output(["git", "config", "--global", "user.email"])
+    if git_email:
+        entry = f"{git_email} {pubkey_content}\n"
+        existing = allowed_signers_path.read_text() if allowed_signers_path.exists() else ""
+        if pubkey_content not in existing:
+            with allowed_signers_path.open("a") as f:
+                f.write(entry)
+            ok(f"Added to allowed_signers: {allowed_signers_path}")
+        else:
+            info("Key already present in allowed_signers.")
+        git_config("gpg.ssh.allowedSignersFile", str(allowed_signers_path))
+
+    print(f"\n  {C.BOLD}Signing config summary:{C.RESET}")
+    print(f"  {C.DIM}gpg.format:              {C.RESET}{C.WHITE}ssh{C.RESET}")
+    print(f"  {C.DIM}user.signingKey:         {C.RESET}{C.WHITE}{pubkey_path}{C.RESET}")
+    print(f"  {C.DIM}commit.gpgSign:          {C.RESET}{C.WHITE}true{C.RESET}")
+    print(f"  {C.DIM}tag.gpgSign:             {C.RESET}{C.WHITE}true{C.RESET}")
+    if git_email:
+        print(f"  {C.DIM}gpg.ssh.allowedSigners: {C.RESET}{C.WHITE}{allowed_signers_path}{C.RESET}")
+
+    ok("SSH commit signing configured.")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Git setup utility",
@@ -215,10 +349,15 @@ def main():
         "-C", action="store_true", help="Install Gerrit Change-Id commit-msg hook"
     )
     parser.add_argument("-A", action="store_true", help="Setup Git aliases")
+    parser.add_argument(
+        "-S",
+        action="store_true",
+        help="Setup SSH commit signing with id_ed25519.pub",
+    )
 
     args = parser.parse_args()
 
-    if not any([args.L, args.C, args.A]):
+    if not any([args.L, args.C, args.A, args.S]):
         parser.print_help()
         sys.exit(1)
 
@@ -230,6 +369,8 @@ def main():
         setup_aliases()
     if args.C:
         setup_commit_hook()
+    if args.S:
+        setup_signing()
 
     print(f"\n{C.BOLD}{C.GREEN}All requested setups are done.{C.RESET}\n")
 
